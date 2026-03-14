@@ -6,6 +6,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime
+from page_overview import render_overview_page
+
 
 st.set_page_config(
     page_title="NSE Sector Rotation Dashboard",
@@ -64,7 +66,7 @@ with st.sidebar:
 
     page = st.radio(
         "📄 Page",
-        ["📊 Sector Dashboard", "📈 Stock Ranker", "🔍 Screener"],
+        ["🏠 Overview", "📊 Sector Dashboard", "📈 Stock Ranker", "🔍 Screener"],
         label_visibility="collapsed"
     )
     st.markdown("---")
@@ -142,8 +144,22 @@ with st.sidebar:
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 1 — SECTOR DASHBOARD
 # ══════════════════════════════════════════════════════════════════════════════
+if page == "🏠 Overview":
+    sector_data = None
+    sector_prices = None
+    try:
+        sector_data = get_data()
+        sector_prices = sector_data["prices"]
+    except Exception:
+        pass
+    render_overview_page(
+        universe_df=get_universe(),
+        prices_df=sector_prices,
+        sectors=list(SECTORS.keys()),
+    )
 
-if page == "📊 Sector Dashboard":
+
+elif page == "📊 Sector Dashboard":
     with st.spinner("⏳ Fetching NSE sector data..."):
         try:
             data    = get_data()
