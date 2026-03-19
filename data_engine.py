@@ -14,19 +14,19 @@ SECTORS = {
     "NIFTY BANK":         "^NSEBANK",
     "NIFTY ENERGY":       "^CNXENERGY",
     "NIFTY FMCG":         "^CNXFMCG",
-    "NIFTY FINANCE":      "^CNXFINANCE",
+    "NIFTY FINANCE":      "^CNXFIN",
     "NIFTY INFRA":        "^CNXINFRA",
     "NIFTY IT":           "^CNXIT",
     "NIFTY MEDIA":        "^CNXMEDIA",
     "NIFTY METAL":        "^CNXMETAL",
     "NIFTY MNC":          "^CNXMNC",
     "NIFTY PHARMA":       "^CNXPHARMA",
-    "NIFTY PSE":          "^CNXPSE",
+    "NIFTY PSE":          "^CNXCPSE",
     "NIFTY REALTY":       "^CNXREALTY",
     "NIFTY CPSE":         "CPSE.NS",
     "NIFTY PSU BANK":     "^CNXPSUBANK",
-    "NIFTY COMMODITIES":  "^CNXCOMMODITIES",
-    "NIFTY CONSUMPTION":  "^CNXCONSUMPTION",
+    "NIFTY COMMODITIES":  "^CNXCMDT",
+    "NIFTY CONSUMPTION":  "^CNXCONSUM",
     "NIFTY SERVICES":     "^CNXSERVICE",
     "NIFTY INDIA MFG":    "^CNXMFG",
     "NIFTY OIL & GAS":    "^CNXOILGAS",
@@ -374,3 +374,106 @@ def load_all_data():
         "benchmark_name":  list(BENCHMARK.keys())[0],
         "last_updated":    datetime.now().strftime("%d %b %Y %H:%M IST"),
     }
+# Breadth Checker function
+
+
+# ── Breadth History ────────────────────────────────────────────────────────────
+
+def get_breadth_history(days: int = 30) -> pd.DataFrame:
+    """
+    Compute daily market breadth metrics for the last N trading days.
+    Loads the master universe CSV written by universe_builder.py.
+    Falls back gracefully if the CSV is not found.
+
+    Returns DataFrame with columns:
+        date | advancing | declining | unchanged |
+        pct_above_20dma | new_highs | new_lows | ad_line
+    """
+    import os, pathlib
+
+    # ── Locate master universe ────────────────────────────────────────────────
+    _here    = pathlib.Path(__file__).parent
+    _csv     = _here / "data" / "master_universe.csv"
+
+    if _csv.exists():
+        uni  = pd.read_csv(_csv)
+    else:
+        # Try a few fallback paths
+        for _alt in [_here / "master_universe.csv",
+                     pathlib.Path("data/master_universe.csv"),
+                     pathlib.Path("master_universe.csv")]:
+            if _alt.exists():
+                uni = pd.read_csv(_alt)
+                break
+        else:
+            raise FileNotFoundError(
+                f"master_universe.csv not found. "
+                f"Run universe_builder.py first to generate it."
+            )
+
+    # ── Build ticker list ─────────────────────────────────────────────────────
+    sym_col  = "symbol" if "symbol" in uni.columns else uni.columns[0]
+    tickers  = (uni[sym_col].astype(str).str.strip() + ".NS").tolist()
+    tickers  = [t for t in tickers if t != ".NS"]
+
+    if not tickers:
+        raise ValueError("No tickers found in master_universe.csv")
+
+    # ── Fetch price history (90 days to cover 20-DMA + N trading days) ────────
+    lookback = max(days + 30, 90)
+    raw      = yf.download(
+        tickers,
+        period      = f"{lookback}d",
+        auto_adjust = True,
+        progress    = False,
+        threads     = True,
+    )
+
+    if raw.empty:
+        raise ValueError("yfinance returned no data for universe tickers.")
+
+    prices = raw["Close"] if isinstance(raw.columns, pd.MultiIndex) else raw
+    prices.replace([np.inf, -np.inf], np.nan, inplace=True)
+    prices.ffill(limit=3, inplace=True)
+
+    trading_days = prices.index[-days:]
+
+    records = []
+    for date in trading_days:
+        close = prices.loc[date]
+        prev_idx = prices.index.get_loc(date) - 1
+        if prev_idx < 0:
+            continue
+        prev  = prices.iloc[prev_idx]
+
+        adv   = int((close > prev).sum())
+        dec   = int((close < prev).sum())
+        unch  = int((close == prev).sum())
+
+        # % above 20-DMA
+        loc_i = prices.index.get_loc(date)
+        ma20  = prices.iloc[max(0, loc_i - 19): loc_i + 1].mean()
+        n_val = close.notna().sum()
+        pct   = int((close > ma20).sum() / n_val * 100) if n_val > 0 else 0
+
+        # New 52-week highs / lows (use all available history up to this date)
+        hist     = prices.loc[:date]
+        hi52     = int((close >= hist.max()).sum())
+        lo52     = int((close <= hist.min()).sum())
+
+        records.append(dict(
+            date            = date,
+            advancing       = adv,
+            declining       = dec,
+            unchanged       = unch,
+            pct_above_20dma = pct,
+            new_highs       = hi52,
+            new_lows        = lo52,
+        ))
+
+    if not records:
+        raise ValueError("No breadth records computed — insufficient price history.")
+
+    df           = pd.DataFrame(records)
+    df["ad_line"] = (df["advancing"] - df["declining"]).cumsum()
+    return df

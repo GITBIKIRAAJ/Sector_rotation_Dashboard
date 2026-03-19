@@ -6,12 +6,16 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime
-from page_overview import render_overview_page
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import plotly.io as pio
 
+from page_overview import render_overview_page
 
 st.set_page_config(
     page_title="NSE Sector Rotation Dashboard",
-    page_icon="📊", layout="wide",
+    page_icon="📊",
+    layout="wide",
     initial_sidebar_state="expanded",
 )
 
@@ -21,118 +25,123 @@ st.markdown("""
   .metric-card {
     background: #f8fafc; border: 1px solid #e2e8f0;
     border-radius: 10px; padding: 14px 18px; margin-bottom: 8px;
+    color: #0f172a;
   }
   .stock-card-top {
     background: linear-gradient(135deg,#f0fdf4,#dcfce7);
     border: 1px solid #86efac; border-radius: 10px;
-    padding: 12px 16px; margin-bottom: 8px;
+    padding: 12px 16px; margin-bottom: 8px; color: #0f172a;
   }
   .stock-card-bot {
     background: linear-gradient(135deg,#fef2f2,#fee2e2);
     border: 1px solid #fca5a5; border-radius: 10px;
-    padding: 12px 16px; margin-bottom: 8px;
+    padding: 12px 16px; margin-bottom: 8px; color: #0f172a;
   }
+  .metric-card small, .stock-card-top small, .stock-card-bot small { color: #334155; }
   .cap-badge {
     display:inline-block; padding:2px 8px; border-radius:12px;
     font-size:11px; font-weight:600; color:#fff; margin-left:6px;
   }
   .weight-def { font-size:12px; color:#6b7280; line-height:1.5; }
+  .section-header {
+    font-size:14px; font-weight:600; color:#1e3a5f;
+    letter-spacing:0.04em; text-transform:uppercase;
+    padding:4px 0 8px 0; border-bottom:2px solid #e2e8f0; margin-bottom:12px;
+  }
+  .alert-box  { background:#fefce8; border:1px solid #fde047; border-radius:8px; padding:10px 14px; font-size:13px; margin-bottom:8px; }
+  .insight-box{ background:#f0fdf4; border:1px solid #86efac; border-radius:8px; padding:10px 14px; font-size:13px; margin-bottom:8px; }
+  .warn-box   { background:#fef2f2; border:1px solid #fca5a5; border-radius:8px; padding:10px 14px; font-size:13px; margin-bottom:8px; }
+  footer { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
-from data_engine import load_all_data, SECTORS, BENCHMARK, TIMEFRAMES
+from data_engine import load_all_data, get_breadth_history, SECTORS, BENCHMARK, TIMEFRAMES
 import charts as ch
 from page_screener import render_screener_page
 from stock_engine import (
     build_universe, filter_universe, get_sectors, get_tickers,
     rank_stocks, get_top_bottom, fetch_sector_index_prices,
-    CAP_TIER_ORDER, CAP_TIER_COLORS, CAP_TIER_RANGES, DEFAULT_WEIGHTS, WEIGHT_DEFINITIONS,
+    CAP_TIER_ORDER, CAP_TIER_COLORS, CAP_TIER_RANGES,
+    DEFAULT_WEIGHTS, WEIGHT_DEFINITIONS,
 )
 
-# ── Cached loaders ────────────────────────────────────────────────────────────
 
+# ── Cached loaders ────────────────────────────────────────────────────────────
 @st.cache_data(ttl=900, show_spinner=False)
 def get_data():
     return load_all_data()
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def get_breadth_data(days=30):
+    return get_breadth_history(days=days)
+
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_universe():
     return build_universe()
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
 
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## ⚙️ Settings")
-
     page = st.radio(
         "📄 Page",
         ["🏠 Overview", "📊 Sector Dashboard", "📈 Stock Ranker", "🔍 Screener"],
-        label_visibility="collapsed"
+        label_visibility="collapsed",
     )
     st.markdown("---")
 
     if page == "📊 Sector Dashboard":
-        tf_options  = ["1W","1M","3M","6M","YTD","1Y"]
-        selected_tf = st.selectbox("Primary Timeframe", tf_options, index=1)
+        tf_options   = ["1W","1M","3M","6M","YTD","1Y"]
+        selected_tf  = st.selectbox("Primary Timeframe", tf_options, index=1)
         st.markdown("---")
         st.markdown("### Sector Filter")
-        sector_list = list(SECTORS.keys())
-        select_all  = st.checkbox("Select All Sectors", value=True)
-        if select_all:
-            selected_sectors = sector_list
-        else:
-            selected_sectors = st.multiselect("Choose Sectors", sector_list, default=sector_list[:10])
+        sector_list  = list(SECTORS.keys())
+        select_all   = st.checkbox("Select All Sectors", value=True)
+        selected_sectors = sector_list if select_all else st.multiselect(
+            "Choose Sectors", sector_list, default=sector_list[:10])
         st.markdown("---")
         st.markdown("### Chart Period")
         chart_period = st.radio("Trend Chart Lookback", ["1 Week","1 Month","3 Months"], index=2)
         period_map   = {"1 Week":"norm_7","1 Month":"norm_30","3 Months":"norm_90"}
         st.markdown("---")
         st.markdown("### RRG Settings")
-        rrg_window = st.slider("RS Smoothing Window (days)", 5, 30, 10)
+        rrg_window   = st.slider("RS Smoothing Window (days)", 5, 30, 10)
 
     elif page == "📈 Stock Ranker":
         st.markdown("### Universe Filter")
         universe_df_full = get_universe()
         all_sectors_uni  = sorted(universe_df_full["nse_sector"].dropna().unique().tolist())
-
-        nifty_idx   = st.selectbox("NIFTY Index", ["All","NIFTY 50","NIFTY 100","NIFTY 200",
-                                                    "NIFTY 500","NIFTY 1000","NIFTY 2000"])
-        cap_options = st.multiselect("Cap Tier", CAP_TIER_ORDER[:-1], default=CAP_TIER_ORDER[:-1])
-        mcap_min    = st.number_input("Min cap (Cr)", value=1000, step=500)
-        mcap_max    = st.number_input("Max cap (Cr)", value=50000, step=1000)
+        nifty_idx    = st.selectbox("NIFTY Index", ["All","NIFTY 50","NIFTY 100","NIFTY 200",
+                                                     "NIFTY 500","NIFTY 1000","NIFTY 2000"])
+        cap_options  = st.multiselect("Cap Tier", CAP_TIER_ORDER[:-1], default=CAP_TIER_ORDER[:-1])
+        mcap_min     = st.number_input("Min cap (Cr)", value=1000, step=500)
+        mcap_max     = st.number_input("Max cap (Cr)", value=50000, step=1000)
         st.markdown("---")
         st.markdown("### Sector")
         show_all_sec = st.radio("Show", ["All sectors","Select specific"], index=0)
-        if show_all_sec == "Select specific":
-            chosen_sectors = st.multiselect("Sectors", all_sectors_uni, default=all_sectors_uni[:3])
-        else:
-            chosen_sectors = None
+        chosen_sectors = None if show_all_sec == "All sectors" else st.multiselect(
+            "Sectors", all_sectors_uni, default=all_sectors_uni[:3])
         st.markdown("---")
-
         st.markdown("### Score weights")
         st.caption("Adjust to your style — auto-normalised")
-
         raw_weights = {}
         for key, (label, definition) in WEIGHT_DEFINITIONS.items():
             default_pct = int(DEFAULT_WEIGHTS[key] * 100)
-            col1, col2 = st.columns([8, 1])
+            col1, col2  = st.columns([8, 1])
             with col1:
                 raw_weights[key] = st.slider(
-                    label.split("(")[0].strip(), 0, 50, default_pct, key=f"w_{key}"
-                )
+                    label.split("(")[0].strip(), 0, 50, default_pct, key=f"w_{key}")
             with col2:
                 st.markdown(
                     f'<span title="{definition}" style="cursor:help;font-size:16px;">❓</span>',
-                    unsafe_allow_html=True,
-                )
+                    unsafe_allow_html=True)
             with st.expander("", expanded=False):
                 st.markdown(f'<p class="weight-def">{definition}</p>', unsafe_allow_html=True)
-
         total_w = sum(raw_weights.values()) or 1
         weights = {k: v/total_w for k, v in raw_weights.items()}
         top_n   = st.slider("Top / Bottom N stocks", 5, 20, 14)
-
-    # Screener page has its own sidebar rendered inside render_screener_page()
 
     st.markdown("---")
     if st.button("🔄 Refresh Data", use_container_width=True):
@@ -141,14 +150,15 @@ with st.sidebar:
     st.caption("Data via Yahoo Finance · 15-min cache")
     st.caption("NSE Indices · All 20 sectors vs NIFTY 50")
 
+
 # ══════════════════════════════════════════════════════════════════════════════
-# PAGE 1 — SECTOR DASHBOARD
+# PAGE — OVERVIEW
 # ══════════════════════════════════════════════════════════════════════════════
 if page == "🏠 Overview":
-    sector_data = None
+    sector_data   = None
     sector_prices = None
     try:
-        sector_data = get_data()
+        sector_data   = get_data()
         sector_prices = sector_data["prices"]
     except Exception:
         pass
@@ -159,7 +169,11 @@ if page == "🏠 Overview":
     )
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE — SECTOR DASHBOARD
+# ══════════════════════════════════════════════════════════════════════════════
 elif page == "📊 Sector Dashboard":
+
     with st.spinner("⏳ Fetching NSE sector data..."):
         try:
             data    = get_data()
@@ -196,11 +210,10 @@ elif page == "📊 Sector Dashboard":
         st.caption(f"Primary TF: **{selected_tf}**")
     st.markdown("---")
 
-    # ── Section A ────────────────────────────────────────────────────────────
+    # ── Section A — Benchmark strip ──────────────────────────────────────────
     st.markdown("### 📌 A — Benchmark & Top/Bottom Sectors")
     bm_chg     = get_metric(benchmark_name)
     bm_chg_str = f"{bm_chg:+.2f}%" if pd.notna(bm_chg) else "N/A"
-
     colA1, colA2, colA3 = st.columns(3)
     with colA1:
         st.metric("NIFTY 50 (1D)", bm_chg_str)
@@ -217,7 +230,7 @@ elif page == "📊 Sector Dashboard":
                 st.markdown(f"🔴 **{sec.replace('NIFTY ','')}** `{val:+.1f}%`")
     st.markdown("---")
 
-    # ── Section B ────────────────────────────────────────────────────────────
+    # ── Section B — Sector Performance ───────────────────────────────────────
     st.markdown("### 📊 B — Sector Performance")
     tab1, tab2, tab3 = st.tabs(["📋 Table","🌡️ Heat Map","📊 Relative Bars"])
     with tab1:
@@ -225,14 +238,15 @@ elif page == "📊 Sector Dashboard":
             ch.make_performance_table(returns, rel_returns, benchmark_name, selected_sectors, selected_tf),
             use_container_width=True)
     with tab2:
-        st.plotly_chart(ch.make_heatmap(rel_returns, selected_sectors, benchmark_name),
-                        use_container_width=True)
+        st.plotly_chart(
+            ch.make_heatmap(rel_returns, selected_sectors, benchmark_name),
+            use_container_width=True)
     with tab3:
         if selected_tf in rel_returns.columns:
             sec_rel = rel_returns.loc[
                 [s for s in selected_sectors if s in rel_returns.index], selected_tf
             ].dropna().sort_values()
-            fig_bar = ch.go.Figure(ch.go.Bar(
+            fig_bar = go.Figure(go.Bar(
                 x=sec_rel.index, y=sec_rel.values,
                 marker=dict(color=["#16a34a" if v >= 0 else "#dc2626" for v in sec_rel.values]),
                 text=[f"{v:+.1f}%" for v in sec_rel.values], textposition="outside",
@@ -245,7 +259,145 @@ elif page == "📊 Sector Dashboard":
             st.plotly_chart(fig_bar, use_container_width=True)
     st.markdown("---")
 
-    # ── Section C ────────────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════════════
+    # Section H — Breadth History  (RIGHT AFTER SECTION B)
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown(
+        '<div class="section-header">📶 H &nbsp;— Market Breadth History</div>',
+        unsafe_allow_html=True,
+    )
+
+    bh_c1, bh_c2, _ = st.columns([1, 1, 2])
+    with bh_c1:
+        breadth_days = st.selectbox("Lookback", [15, 30, 60], index=1, key="breadth_days")
+    with bh_c2:
+        breadth_universe = st.selectbox(
+            "Universe", ["All (1000+)", "NIFTY 500", "NIFTY 200", "NIFTY 50"],
+            index=0, key="breadth_universe")
+
+    with st.spinner("⏳ Computing breadth metrics..."):
+        try:
+            bdf        = get_breadth_data(days=breadth_days)
+            breadth_ok = bdf is not None and len(bdf) > 0
+        except Exception as _be:
+            st.error(f"Breadth data error: {_be}")
+            breadth_ok = False
+
+    if breadth_ok:
+        latest   = bdf.iloc[-1]
+        prev     = bdf.iloc[-2] if len(bdf) > 1 else latest
+        ad_delta = int(latest["ad_line"] - prev["ad_line"])
+        pc_delta = int(latest["pct_above_20dma"] - prev["pct_above_20dma"])
+
+        k1, k2, k3, k4, k5 = st.columns(5)
+        with k1:
+            st.metric("Advancing", f"{int(latest['advancing'])}",
+                      f"{int(latest['advancing']-prev['advancing'])}")
+        with k2:
+            st.metric("Declining", f"{int(latest['declining'])}",
+                      f"{int(latest['declining']-prev['declining'])}", delta_color="inverse")
+        with k3:
+            st.metric("A-D Line", f"{int(latest['ad_line'])}", f"{ad_delta:+d}")
+        with k4:
+            st.metric("% Above 20-DMA", f"{int(latest['pct_above_20dma'])}%", f"{pc_delta:+d}%")
+        with k5:
+            hi  = int(latest["new_highs"]); lo = int(latest["new_lows"])
+            st.metric("Hi / Lo Net", f"{hi} / {lo}", f"Net {hi-lo:+d}")
+
+        pct_now = int(latest["pct_above_20dma"])
+        if pct_now >= 70:
+            st.markdown(
+                f'<div class="warn-box">⚠️ <b>Overbought:</b> {pct_now}% above 20-DMA — breadth stretched.</div>',
+                unsafe_allow_html=True)
+        elif pct_now <= 30:
+            st.markdown(
+                f'<div class="insight-box">🟢 <b>Oversold:</b> Only {pct_now}% above 20-DMA — potential bounce.</div>',
+                unsafe_allow_html=True)
+        else:
+            st.markdown(
+                f'<div class="alert-box">ℹ️ <b>Neutral:</b> {pct_now}% above 20-DMA — normal range.</div>',
+                unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # 4-panel chart
+        _colors    = pio.templates[pio.templates.default].layout.colorway
+        _x         = list(range(len(bdf)))
+        _xlabels   = bdf["date"].dt.strftime("%b %d").tolist()
+        _step      = max(1, len(bdf) // 6)
+        _tvals     = list(range(0, len(bdf), _step))
+
+        fig_bh = make_subplots(
+            rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.09,
+            subplot_titles=[
+                "① Advance-Decline Line (Cumulative)",
+                "② Advancing vs Declining vs Unchanged",
+                "③ % Stocks Above 20-Day Moving Average",
+                "④ New 52-Week Highs vs Lows",
+            ],
+            row_heights=[0.28, 0.24, 0.24, 0.24],
+        )
+        # Panel 1
+        fig_bh.add_trace(go.Scatter(
+            x=_x, y=bdf["ad_line"].tolist(), mode="lines", name="A-D Line",
+            line=dict(color=_colors[0], width=2.5),
+            fill="tozeroy", fillcolor="rgba(99,102,241,0.10)",
+        ), row=1, col=1)
+        fig_bh.add_hline(y=0, line_dash="dot", line_color="gray", line_width=1, row=1, col=1)
+        # Panel 2
+        fig_bh.add_trace(go.Bar(x=_x, y=bdf["advancing"].tolist(),
+            name="Advancing", marker_color=_colors[2], opacity=0.85), row=2, col=1)
+        fig_bh.add_trace(go.Bar(x=_x, y=bdf["declining"].tolist(),
+            name="Declining", marker_color=_colors[3], opacity=0.85), row=2, col=1)
+        fig_bh.add_trace(go.Bar(x=_x, y=bdf["unchanged"].tolist(),
+            name="Unchanged", marker_color="#9ca3af", opacity=0.5), row=2, col=1)
+        # Panel 3
+        fig_bh.add_hrect(y0=70, y1=100, fillcolor="rgba(239,68,68,0.07)",
+                         line_width=0, row=3, col=1)
+        fig_bh.add_hrect(y0=0,  y1=30,  fillcolor="rgba(34,197,94,0.07)",
+                         line_width=0, row=3, col=1)
+        fig_bh.add_trace(go.Scatter(
+            x=_x, y=bdf["pct_above_20dma"].tolist(),
+            mode="lines+markers", name="% Above 20-DMA",
+            line=dict(color=_colors[1], width=2.2), marker=dict(size=4),
+        ), row=3, col=1)
+        fig_bh.add_hline(y=50, line_dash="dot", line_color="gray", line_width=1, row=3, col=1)
+        # Panel 4
+        fig_bh.add_trace(go.Bar(x=_x, y=bdf["new_highs"].tolist(),
+            name="New Highs", marker_color=_colors[2], opacity=0.9), row=4, col=1)
+        fig_bh.add_trace(go.Bar(x=_x, y=(-bdf["new_lows"]).tolist(),
+            name="New Lows", marker_color=_colors[3], opacity=0.9), row=4, col=1)
+        fig_bh.add_hline(y=0, line_color="gray", line_width=1, row=4, col=1)
+        # Axes
+        for _r in [1, 2, 3]:
+            fig_bh.update_xaxes(showticklabels=False, row=_r, col=1)
+        fig_bh.update_xaxes(
+            tickmode="array", tickvals=_tvals,
+            ticktext=[_xlabels[i] for i in _tvals],
+            tickangle=0, title_text="Date", row=4, col=1)
+        fig_bh.update_yaxes(title_text="A-D Pts",  row=1, col=1, title_standoff=5)
+        fig_bh.update_yaxes(title_text="# Stocks", row=2, col=1, title_standoff=5)
+        fig_bh.update_yaxes(title_text="% Stocks", row=3, col=1,
+                             range=[0, 100], title_standoff=5)
+        fig_bh.update_yaxes(title_text="Count",    row=4, col=1, title_standoff=5)
+        fig_bh.update_layout(
+            barmode="stack", height=820,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+            margin=dict(l=60, r=20, t=60, b=50),
+        )
+        st.plotly_chart(fig_bh, use_container_width=True)
+
+        with st.expander("📋 Raw Breadth Data Table"):
+            _disp = bdf.copy()
+            _disp["date"] = _disp["date"].dt.strftime("%Y-%m-%d")
+            _disp.columns = [c.replace("_", " ").title() for c in _disp.columns]
+            st.dataframe(_disp, use_container_width=True, height=300)
+    else:
+        st.info("Breadth data unavailable. Ensure universe_builder.py has run successfully.")
+
+    st.markdown("---")
+
+    # ── Section C — Trend & RS ────────────────────────────────────────────────
     st.markdown("### 📈 C — Trend & Relative Strength")
     tc1, tc2 = st.tabs(["📉 Normalized Trend","📐 Rolling RS Lines"])
     with tc1:
@@ -257,7 +409,7 @@ elif page == "📊 Sector Dashboard":
         st.plotly_chart(ch.make_rs_chart(rs_data, selected_sectors), use_container_width=True)
     st.markdown("---")
 
-    # ── Section D ────────────────────────────────────────────────────────────
+    # ── Section D — RRG ──────────────────────────────────────────────────────
     st.markdown("### 🔄 D — Relative Rotation & Rank Shift")
     dc1, dc2 = st.tabs(["🎯 RRG Chart","📊 Rank Shift"])
     with dc1:
@@ -265,30 +417,32 @@ elif page == "📊 Sector Dashboard":
             st.plotly_chart(ch.make_rrg_chart(rrg, rrg_days), use_container_width=True)
             if not rrg_days.empty:
                 st.markdown("#### 📅 Days in Current Quadrant")
-                disp = rrg_days.copy().reset_index()
-                disp.columns = ["Sector","Quadrant","Trading Days"]
-                disp = disp.sort_values("Trading Days", ascending=False)
-                quad_colors = {"Leading":"🟢","Improving":"🔵","Weakening":"🟡","Lagging":"🔴"}
-                disp["Quadrant"] = disp["Quadrant"].apply(lambda q: f"{quad_colors.get(q,'⚪')} {q}")
-                st.dataframe(disp, use_container_width=True, hide_index=True)
+                disp_rrg = rrg_days.copy().reset_index()
+                disp_rrg.columns = ["Sector","Quadrant","Trading Days"]
+                disp_rrg = disp_rrg.sort_values("Trading Days", ascending=False)
+                qc = {"Leading":"🟢","Improving":"🔵","Weakening":"🟡","Lagging":"🔴"}
+                disp_rrg["Quadrant"] = disp_rrg["Quadrant"].apply(lambda q: f"{qc.get(q,'⚪')} {q}")
+                st.dataframe(disp_rrg, use_container_width=True, hide_index=True)
         else:
             st.info("RRG data unavailable.")
     with dc2:
         st.plotly_chart(ch.make_rank_shift_chart(rank_shift), use_container_width=True)
     st.markdown("---")
 
-    # ── Section E ────────────────────────────────────────────────────────────
+    # ── Section E — Risk ─────────────────────────────────────────────────────
     st.markdown("### ⚠️ E — Risk Metrics")
     ec1, ec2 = st.tabs(["📊 Volatility","📉 Drawdown"])
     with ec1:
-        st.plotly_chart(ch.make_volatility_chart(volatility, benchmark_name, selected_sectors),
-                        use_container_width=True)
+        st.plotly_chart(
+            ch.make_volatility_chart(volatility, benchmark_name, selected_sectors),
+            use_container_width=True)
     with ec2:
-        st.plotly_chart(ch.make_drawdown_chart(drawdown, benchmark_name, selected_sectors),
-                        use_container_width=True)
+        st.plotly_chart(
+            ch.make_drawdown_chart(drawdown, benchmark_name, selected_sectors),
+            use_container_width=True)
     st.markdown("---")
 
-    # ── Section F ────────────────────────────────────────────────────────────
+    # ── Section F — Alerts ───────────────────────────────────────────────────
     st.markdown("### 🚨 F — Rotation Alerts")
     alerts = []
     if not rrg.empty:
@@ -298,7 +452,7 @@ elif page == "📊 Sector Dashboard":
             if not rrg_days.empty and sec in rrg_days.index:
                 d     = rrg_days.loc[sec, "Days_In_Quadrant"]
                 d_str = f" · {d}d in quadrant"
-            if q == "Leading":     alerts.append(f"🟢 **{sec}** — Leading (strong & gaining){d_str}")
+            if   q == "Leading":   alerts.append(f"🟢 **{sec}** — Leading (strong & gaining){d_str}")
             elif q == "Improving": alerts.append(f"🔵 **{sec}** — Improving (weak but recovering){d_str}")
             elif q == "Weakening": alerts.append(f"🟡 **{sec}** — Weakening (strong but fading){d_str}")
             elif q == "Lagging":   alerts.append(f"🔴 **{sec}** — Lagging (weak & falling){d_str}")
@@ -316,24 +470,23 @@ elif page == "📊 Sector Dashboard":
         st.info("No significant rotation signals detected.")
     st.markdown("---")
 
-    # ── Section G ────────────────────────────────────────────────────────────
+    # ── Section G — Export ───────────────────────────────────────────────────
     st.markdown("### 💾 G — Export Data")
     if not returns.empty:
-        csv = returns.to_csv()
-        st.download_button("📥 Download Returns CSV", csv, "nse_returns.csv", "text/csv")
+        st.download_button("📥 Download Returns CSV",
+                           returns.to_csv(), "nse_returns.csv", "text/csv")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PAGE 2 — STOCK RANKER
+# PAGE — STOCK RANKER
 # ══════════════════════════════════════════════════════════════════════════════
-
 elif page == "📈 Stock Ranker":
     st.markdown("# 📈 NSE Stock Ranker")
     st.caption("Scores stocks on 7 technical factors — adjust weights in sidebar")
 
     universe_df_full = get_universe()
-
-    nifty_filter = None if nifty_idx == "All" else nifty_idx
-    universe_df  = filter_universe(
+    nifty_filter     = None if nifty_idx == "All" else nifty_idx
+    universe_df      = filter_universe(
         universe_df_full,
         cap_tiers   = cap_options or None,
         mcap_min_cr = mcap_min,
@@ -354,12 +507,10 @@ elif page == "📈 Stock Ranker":
             nifty_px = data_s["prices"].get("NIFTY 50", pd.Series(dtype=float))
             all_sectors_in_universe = universe_df["nse_sector"].dropna().unique().tolist()
             sec_px   = fetch_sector_index_prices(all_sectors_in_universe)
-
             prog_bar = st.progress(0, text="Fetching prices…")
             def progress_cb(done, total, msg):
                 pct = int(done/total*100) if total > 0 else 0
                 prog_bar.progress(min(pct,100), text=msg)
-
             ranked_df = rank_stocks(universe_df, nifty_px, sec_px, weights, progress_cb)
             prog_bar.empty()
             score_ok  = True
@@ -408,33 +559,24 @@ elif page == "📈 Stock Ranker":
     col_top, col_bot = st.columns(2)
     with col_top:
         st.markdown(f"### 🟢 Top {len(top_df)} — Strongest")
-        if top_df.empty:
-            st.info("Not enough stocks for top list.")
-        else:
-            for _, row in top_df.iterrows():
-                render_stock_card(row, "stock-card-top")
-
+        for _, row in top_df.iterrows():
+            render_stock_card(row, "stock-card-top")
     with col_bot:
         st.markdown(f"### 🔴 Bottom {len(bot_df)} — Weakest")
-        if bot_df.empty:
-            st.info("Not enough stocks for bottom list.")
-        else:
-            for _, row in bot_df.iterrows():
-                render_stock_card(row, "stock-card-bot")
+        for _, row in bot_df.iterrows():
+            render_stock_card(row, "stock-card-bot")
 
     st.markdown("---")
-
     with st.expander("📋 Full Ranked Table", expanded=False):
         import stock_charts as sc
         st.plotly_chart(sc.make_rank_table(ranked_df), use_container_width=True)
-
     st.markdown("---")
-    csv_out = ranked_df.to_csv(index=False)
-    st.download_button("📥 Download Ranked Stocks CSV", csv_out, "ranked_stocks.csv", "text/csv")
+    st.download_button("📥 Download Ranked Stocks CSV",
+                       ranked_df.to_csv(index=False), "ranked_stocks.csv", "text/csv")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PAGE 3 — SCREENER
+# PAGE — SCREENER
 # ══════════════════════════════════════════════════════════════════════════════
-
 elif page == "🔍 Screener":
     render_screener_page(get_universe())

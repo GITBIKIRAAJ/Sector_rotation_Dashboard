@@ -1,5 +1,46 @@
-.venv/
+# ── Data files (generated, not source code) ──────────────────────────────────
+data/master_universe.csv
+data/*.csv
+data/*.json
+
+# ── Python cache ──────────────────────────────────────────────────────────────
 __pycache__/
-*.pyc
-data/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+venv/
+env/
+.venv/
+.env/
+
+# ── Environment variables / secrets ──────────────────────────────────────────
 .env
+.env.local
+.streamlit/secrets.toml
+
+# ── OS files ──────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── IDE / Editor ──────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Build / dist ──────────────────────────────────────────────────────────────
+dist/
+build/
+*.egg-info/

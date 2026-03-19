@@ -8,6 +8,68 @@ import yfinance as yf
 from datetime import datetime, timedelta
 import warnings
 warnings.filterwarnings("ignore")
+import contextlib
+import io
+
+
+def _chunked(seq, size: int):
+    for i in range(0, len(seq), size):
+        yield seq[i:i + size]
+
+
+def _yf_download_close_silent(
+    tickers: list[str],
+    *,
+    period: str | None = None,
+    start: str | None = None,
+    auto_adjust: bool = True,
+    threads: bool = True,
+    batch_size: int = 50,
+) -> pd.DataFrame:
+    """
+    Robust yfinance Close downloader for large ticker lists.
+    - Downloads in batches (reduces intermittent failures)
+    - Drops all-NaN tickers
+    - Suppresses yfinance stderr noise ("possibly delisted", "no timezone found")
+    """
+    tickers = [t for t in (tickers or []) if isinstance(t, str) and t.strip()]
+    if not tickers:
+        return pd.DataFrame()
+
+    frames: list[pd.DataFrame] = []
+    for batch in _chunked(tickers, max(1, int(batch_size))):
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            try:
+                raw = yf.download(
+                    batch,
+                    period=period,
+                    start=start,
+                    auto_adjust=auto_adjust,
+                    progress=False,
+                    threads=threads,
+                )
+            except Exception:
+                continue
+
+        if raw is None or getattr(raw, "empty", True):
+            continue
+
+        closes = raw["Close"] if isinstance(raw.columns, pd.MultiIndex) else raw[["Close"]]
+        if not isinstance(raw.columns, pd.MultiIndex):
+            closes.columns = batch[:1]
+
+        closes = closes.dropna(axis=1, how="all")
+        if not closes.empty:
+            frames.append(closes)
+
+    if not frames:
+        return pd.DataFrame()
+
+    closes_all = pd.concat(frames, axis=1)
+    closes_all = closes_all.loc[:, ~closes_all.columns.duplicated()]
+    closes_all = closes_all.dropna(axis=1, how="all")
+    return closes_all
 
 INDEX_TICKERS = {
     "NIFTY 50":   "^NSEI",
@@ -22,13 +84,15 @@ def fetch_index_snapshot() -> dict:
     result = {}
     tickers = list(INDEX_TICKERS.values())
     try:
-        raw = yf.download(tickers, period="30d", auto_adjust=True,
-                          progress=False, threads=True)
-        if raw.empty:
+        closes = _yf_download_close_silent(
+            tickers,
+            period="30d",
+            auto_adjust=True,
+            threads=True,
+            batch_size=20,
+        )
+        if closes.empty:
             return result
-        closes = raw["Close"] if isinstance(raw.columns, pd.MultiIndex) else raw[["Close"]]
-        if not isinstance(raw.columns, pd.MultiIndex):
-            closes.columns = tickers[:1]
 
         for name, tkr in INDEX_TICKERS.items():
             if tkr not in closes.columns:
@@ -77,18 +141,16 @@ def _fetch_shared_prices(universe_df: pd.DataFrame,
     if not tickers:
         return pd.DataFrame()
     start = (datetime.today() - timedelta(days=400)).strftime("%Y-%m-%d")
-    try:
-        raw = yf.download(tickers, start=start, auto_adjust=True,
-                          progress=False, threads=True)
-        if raw.empty:
-            return pd.DataFrame()
-        closes = raw["Close"] if isinstance(raw.columns, pd.MultiIndex) else raw[["Close"]]
-        if not isinstance(raw.columns, pd.MultiIndex):
-            closes.columns = tickers[:1]
-        closes = closes.ffill()
-        return closes
-    except Exception:
+    closes = _yf_download_close_silent(
+        tickers,
+        start=start,
+        auto_adjust=True,
+        threads=True,
+        batch_size=50,
+    )
+    if closes.empty:
         return pd.DataFrame()
+    return closes.ffill()
 
 
 # ── 3. Market Breadth ─────────────────────────────────────────────────────────
